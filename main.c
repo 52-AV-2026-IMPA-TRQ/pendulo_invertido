@@ -1,36 +1,50 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "config.h"
 
 // Conexión ánodo común: PUL+ y DIR+ a 3V3, PUL- a GP15, DIR- a GP14.
 // La corriente circula (optoacoplador encendido) cuando el GPIO está en BAJO.
 
-#define HALF_PERIOD_MS 5      // 5 ms alto + 5 ms bajo = 100 pasos/s
-#define STEPS_PER_MOVE 400    // 2 vueltas en paso completo
-#define PRINT_EVERY    100    // informa cada 100 pasos (1 s a esta velocidad)
+// ---------- Parámetros (editá estos valores) ----------
+#define STEPS_PER_MOVE  2000   // pasos por tramo (2000 = 10 vueltas en paso completo)
+#define START_SPEED_SPS 200    // velocidad de arranque y frenado final (pasos/s)
+#define MAX_SPEED_SPS   2000 // velocidad máxima (pasos/s): subila de a poco
+#define ACCEL_SPS2      2000   // aceleración (pasos/s por segundo): bajala si pierde pasos
+// -------------------------------------------------------
 
 static int32_t position = 0;  // pasos acumulados (+ adelante, - atrás)
 
 static void move(bool dir, int steps) {
-    printf("Inicio movimiento: sentido=%s, %d pasos\n", dir ? "adelante" : "atras", steps);
+    printf("Inicio: sentido=%s, %d pasos, vmax=%d pasos/s\n",
+           dir ? "adelante" : "atras", steps, MAX_SPEED_SPS);
 
     gpio_put(DIR_PIN, dir);
-    sleep_ms(10);
+    sleep_ms(10);                       // DIR estable antes de pulsar
+
+    const float v0sq = (float)START_SPEED_SPS * START_SPEED_SPS;
+    uint32_t t_start = time_us_32();
 
     for (int i = 0; i < steps; i++) {
-        gpio_put(PUL_PIN, 0);
-        sleep_ms(HALF_PERIOD_MS);
-        gpio_put(PUL_PIN, 1);
-        sleep_ms(HALF_PERIOD_MS);
+        // Perfil trapezoidal: acelera al inicio, mantiene, frena al final
+        float v_acc = sqrtf(v0sq + 2.0f * ACCEL_SPS2 * (float)i);
+        float v_dec = sqrtf(v0sq + 2.0f * ACCEL_SPS2 * (float)(steps - 1 - i));
+        float v = (float)MAX_SPEED_SPS;
+        if (v_acc < v) v = v_acc;
+        if (v_dec < v) v = v_dec;
+
+        uint32_t half_us = (uint32_t)(500000.0f / v);
+
+        gpio_put(PUL_PIN, 0);           // pulso (optoacoplador encendido)
+        sleep_us(half_us);
+        gpio_put(PUL_PIN, 1);           // reposo
+        sleep_us(half_us);
 
         position += dir ? 1 : -1;
-
-        if ((i + 1) % PRINT_EVERY == 0) {
-            printf("  paso %d/%d | posicion=%ld\n", i + 1, steps, (long)position);
-        }
     }
 
-    printf("Fin movimiento: posicion=%ld\n", (long)position);
+    uint32_t ms = (time_us_32() - t_start) / 1000;
+    printf("Fin: posicion=%ld, tiempo=%lu ms\n", (long)position, (unsigned long)ms);
 }
 
 int main(void) {
@@ -47,13 +61,13 @@ int main(void) {
     }
     sleep_ms(500);
 
-    printf("Test de motor TB6600 iniciado\n");
+    printf("Test de motor TB6600 con rampa iniciado\n");
     sleep_ms(1000);
 
     while (true) {
         move(true, STEPS_PER_MOVE);
-        sleep_ms(1000);
+        sleep_ms(800);
         move(false, STEPS_PER_MOVE);
-        sleep_ms(1000);
+        sleep_ms(800);
     }
 }
