@@ -27,4 +27,4 @@
 #define KD  0.0f
 
 // ---------- MPU6050 ----------
-#define MPU_ALPHA        0.98f   // filtro complementario (más alto = confía más en el giroscopio)
+#define MPU_ALPHA        0.998f
