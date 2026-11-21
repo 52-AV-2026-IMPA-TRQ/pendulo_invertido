@@ -26,13 +26,15 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-add_executable(pendulo_invertido main.c mpu6050.c)
+add_executable(pendulo_invertido main.c stepper.c)
 
 target_link_libraries(pendulo_invertido
     pico_stdlib
     hardware_i2c
     hardware_pwm
     hardware_clocks
+    hardware_irq
+    hardware_sync
 )
 
 # Salida por USB (monitor serie)

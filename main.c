@@ -1,20 +1,36 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
 #include "config.h"
-#include "mpu6050.h"
+#include "stepper.h"
 
-#define PRINT_EVERY 10   // el lazo corre a 200 Hz: imprime cada 10 ciclos (20 Hz)
+// Test del generador de pasos no bloqueante.
+// El lazo corre a 200 Hz mientras el motor se mueve; si el lazo se bloqueara,
+// la columna "dt max" se iría muy por encima de 5 ms.
+
+// Límites de posición en pasos (poné valores con margen antes del tope físico del riel)
+#define LIMIT_MIN_STEPS  (-2000)
+#define LIMIT_MAX_STEPS  ( 2000)
+
+#define PRINT_MS 200
+
+typedef struct { float sps; uint32_t ms; } phase_t;
+
+// Guion de prueba: velocidad deseada (pasos/s) y duración (ms).
+// Las fases de +-800 durante 6 s intentan pasarse de los límites, y el motor tiene que frenar solo.
+static const phase_t script[] = {
+    {  400, 2000 },
+    {    0, 1000 },
+    { -400, 4000 },
+    {    0, 1000 },
+    {  800, 6000 },
+    {    0, 1000 },
+    { -800, 6000 },
+    {    0, 1000 },
+};
+#define N_PHASES (sizeof(script) / sizeof(script[0]))
 
 int main(void) {
     stdio_init_all();
-
-    // I2C para la MPU6050
-    i2c_init(I2C_PORT, 400 * 1000);
-    gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA_PIN);
-    gpio_pull_up(I2C_SCL_PIN);
 
     // Espera hasta 5 s a que se abra el monitor serie
     absolute_time_t t0 = get_absolute_time();
@@ -24,36 +40,46 @@ int main(void) {
     }
     sleep_ms(500);
 
-    printf("Test de MPU6050\n");
-    mpu_init();
+    printf("Test del generador de pasos no bloqueante\n");
+    printf("Limites: %d a %d pasos | vmax=%.0f pasos/s | aceleracion=%.0f pasos/s2\n",
+           LIMIT_MIN_STEPS, LIMIT_MAX_STEPS, STEPPER_MAX_SPEED_SPS, STEPPER_ACCEL_SPS2);
 
-    printf("Calibrando giroscopio: no muevas el sensor...\n");
-    sleep_ms(3000);   // calentamiento del sensor
-    float offset = mpu_calibrate_gyro(1000);
-    printf("Offset del giroscopio: %.3f deg/s\n", offset);
-    printf("Columnas: theta[deg], omega[deg/s]\n");
+    stepper_init(PUL_PIN, DIR_PIN);
+    stepper_set_limits(LIMIT_MIN_STEPS, LIMIT_MAX_STEPS);
+    stepper_set_position(0);
 
-    float theta = 0.0f;   // ángulo del péndulo (grados)
-    float omega = 0.0f;   // velocidad angular (grados/s)
-
-    uint64_t t_prev = time_us_64();
+    uint64_t t_start = time_us_64();
+    uint64_t t_prev = t_start;
     absolute_time_t next = make_timeout_time_us(LOOP_US);
-    int count = 0;
+
+    size_t idx = 0;
+    uint32_t phase_t0_ms = 0;
+    uint32_t last_print_ms = 0;
+    float max_dt = 0.0f;
 
     while (true) {
-        uint64_t t_now = time_us_64();
-        float dt = (t_now - t_prev) / 1000000.0f;   // dt real de cada ciclo
-        t_prev = t_now;
+        uint64_t now = time_us_64();
+        float dt = (now - t_prev) / 1000000.0f;
+        t_prev = now;
+        if (dt > max_dt) max_dt = dt;
+        uint32_t t_ms = (uint32_t)((now - t_start) / 1000);
 
-        bool ok = mpu_update(dt, &theta, &omega);
+        // Avanza por el guion de prueba
+        if (t_ms - phase_t0_ms >= script[idx].ms) {
+            idx = (idx + 1) % N_PHASES;
+            phase_t0_ms = t_ms;
+        }
 
-        if (++count >= PRINT_EVERY) {
-            count = 0;
-            if (ok) {
-                printf("%.2f, %.2f\n", theta, omega);
-            } else {
-                printf("Error MPU6050: revisa SDA/SCL, 3V3 y GND\n");
-            }
+        stepper_set_target_speed(script[idx].sps);
+        stepper_update(dt);
+
+        if (t_ms - last_print_ms >= PRINT_MS) {
+            last_print_ms = t_ms;
+            printf("t=%6.1f s | objetivo=%5.0f | vel=%6.0f | pos=%6ld | limite=%s | dt max=%.1f ms\n",
+                   t_ms / 1000.0f, script[idx].sps, stepper_get_speed(),
+                   (long)stepper_get_position(), stepper_at_limit() ? "SI" : "no",
+                   max_dt * 1000.0f);
+            max_dt = 0.0f;
         }
 
         sleep_until(next);
